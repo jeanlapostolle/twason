@@ -20,6 +20,7 @@ import json
 from os import environ
 from enum import Enum
 from typing import Union
+from abc import ABC, abstractmethod
 
 
 class Command:
@@ -84,6 +85,45 @@ class Timer:
         )
 
 
+class Moderator(ABC):
+    ABSTAIN: int = -1
+    DELETE_MSG: int = 0
+    TIMEOUT_USER: int = 1
+
+    message: str
+
+    def __init__(self, message: str):
+        self.message = message
+
+    @abstractmethod
+    def vote(self, msg):
+        pass
+
+
+class CapsLockModerator(Moderator):
+    def __init__(self, message: str, min_size: int, threshold: int):
+        super().__init__(message)
+
+        self.min_size = min_size
+        self.threshold = threshold / 100
+
+    def vote(self, msg: str):
+        if len(msg) < self.min_size:
+            return Moderator.ABSTAIN
+
+        n = 0
+        for char in msg:
+            if char.strip() == '':
+                continue
+            if char == char.upper():
+                n += 1
+
+        if n / len(msg) >= self.threshold:
+            return Moderator.DELETE_MSG
+
+        return Moderator.ABSTAIN
+
+
 class Config:
     channel: str
     nickname: str
@@ -91,15 +131,17 @@ class Config:
     command_prefix: str
     commands: [Command]
     timer: Timer
+    moderators: [Moderator]
 
     def __init__(
-            self,
-            channel: str,
-            nickname: str,
-            token: str,
-            command_prefix: str,
-            commands: [Command],
-            timer: Timer
+        self,
+        channel: str,
+        nickname: str,
+        token: str,
+        command_prefix: str,
+        commands: [Command],
+        timer: Timer,
+        moderators: [Moderator]
     ):
         self.nickname = nickname
         self.channel = channel
@@ -107,6 +149,7 @@ class Config:
         self.command_prefix = command_prefix
         self.commands = commands
         self.timer = timer
+        self.moderators = moderators
 
     @classmethod
     def from_dict(cls, params: dict, token: str):
@@ -131,6 +174,15 @@ class Config:
 
             commands.append(command)
 
+        moderators = []
+        for moderator in params.get('moderator', []):
+            if moderator == 'caps-lock':
+                moderators.append(CapsLockModerator(
+                    params['caps-lock'].get("message", "{author}, stop the caps lock!"),
+                    params['caps-lock'].get("min-size", 5),
+                    params['caps-lock'].get("threshold", 50)
+                ))
+
         # Generate help command
         if params.get('help', True):
             for command in commands:
@@ -144,7 +196,8 @@ class Config:
             token,
             commands_prefix,
             commands,
-            timer
+            timer,
+            moderators
         )
 
     def find_command(self, command: str) -> Union[None, Command]:

@@ -17,7 +17,9 @@
 
 import irc3
 
-from .config import TimerStrategy
+from . import utils
+
+from .config import TimerStrategy, Moderator
 from random import shuffle
 from datetime import datetime, timedelta
 
@@ -26,7 +28,7 @@ config = None
 
 @irc3.plugin
 class TwitchBot:
-    def __init__(self, bot):
+    def __init__(self, bot: irc3.IrcBot):
         self.config = config
         self.messages_stack = []
         self.bot = bot
@@ -56,12 +58,15 @@ class TwitchBot:
         return in_str
 
     @irc3.event(irc3.rfc.PRIVMSG)
-    def on_msg(self, target, mask, data, **_):
+    def on_msg(self, mask: str = None, target: str = None, data: str = None, tags: str = None, **_):
+        author = mask.split('!')[0]
         command = self.config.find_command(data.lower().split(' ')[0])
 
         if command is not None:
-            print('%s: %s%s' % (mask, self.config.command_prefix, command.name))
+            print('%s: %s%s' % (author, self.config.command_prefix, command.name))
             self.bot.privmsg(target, self._parse_variables(command.message, mask))
+        else:
+            self.moderate(utils.parse_tags(tags), data, target)
 
         self.nb_messages_since_timer += 1
         self.play_timer()
@@ -86,6 +91,30 @@ class TwitchBot:
         self.nb_messages_since_timer = 0
         self.last_timer_date = datetime.now()
 
+    def moderate(self, tags: {str: str}, msg: str, channel: str):
+        for moderator in self.config.moderators:
+            vote = moderator.vote(msg)
+            if vote == Moderator.ABSTAIN:
+                continue
+            if vote == Moderator.DELETE_MSG:
+                self.bot.send_line("CLEARMSG %s :%s" % (channel, tags['id']))
+            if vote == Moderator.TIMEOUT_USER:
+                self.bot.send_line("@ban-duration=5 :tmi.twitch.tv CLEARCHAT %s :%s")
+
+            self.bot.privmsg(channel, moderator.message)
+            break
+
+
     @irc3.event(irc3.rfc.JOIN)
     def on_join(self, mask, channel, **_):
         print('JOINED %s as %s' % (channel, mask))
+
+    @irc3.event(irc3.rfc.CONNECTED)
+    def on_connected(self, **_):
+        for line in [
+            "CAP REQ :twitch.tv/commands",
+            "CAP REQ :twitch.tv/tags"
+        ]:
+            self.bot.send_line(line)
+
+        self.bot.join('#%s' % self.config.channel)
